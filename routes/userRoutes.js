@@ -34,6 +34,16 @@ router.use((req, res, next) => {
   next();
 });
 
+// Debug logging for /profile route
+router.get('/profile', (req, res, next) => {
+  logger.info('Profile request:', {
+    sessionID: req.sessionID,
+    cookies: req.headers.cookie || 'No cookies',
+    user: req.session.user || 'No user in session',
+  });
+  next();
+});
+
 router.post('/login', loginUser);
 router.post('/register', registerUser);
 router.get('/users', requireAuth, requireRole(['admin']), getAllUsers);
