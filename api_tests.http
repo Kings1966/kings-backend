@@ -1,0 +1,54 @@
+# Environment Variables
+@contentType = application/json
+
+# Test MongoDB Connection
+GET {{baseUrl}}/api/debug/mongodb
+Content-Type: {{contentType}}
+
+###
+
+# Register a User
+POST {{baseUrl}}/api/users/register
+Content-Type: {{contentType}}
+
+{
+  "name": "Test User",
+  "email": "testuser@example.com",
+  "password": "password123",
+  "role": "user"
+}
+
+###
+
+# Login to Set Session Cookie
+POST {{baseUrl}}/api/users/login
+Content-Type: {{contentType}}
+
+{
+  "email": "testuser@example.com",
+  "password": "password123"
+}
+
+###
+
+# Get User Profile (Requires Cookie)
+GET {{baseUrl}}/api/users/profile
+Content-Type: {{contentType}}
+
+###
+
+# Logout to Destroy Session
+POST {{baseUrl}}/api/users/logout
+Content-Type: {{contentType}}
+
+###
+
+# Verify Session is Destroyed
+GET {{baseUrl}}/api/users/profile
+Content-Type: {{contentType}}
+
+###
+
+# Debug Session and Cookies
+GET {{baseUrl}}/api/debug/session
+Content-Type: {{contentType}}

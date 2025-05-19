@@ -4,9 +4,16 @@ const session = require('express-session');
 const MongoStore = require('connect-mongo');
 const cors = require('cors');
 const winston = require('winston');
-require('dotenv').config();
+const http = require('http'); // Required for Socket.IO
+const { Server } = require("socket.io"); // Socket.IO server
+const dotenv = require('dotenv');
+const PORT = process.env.PORT || 5000;
+
+dotenv.config();
 
 const app = express();
+const server = http.createServer(app); // Create HTTP server for Socket.IO
+
 
 // Logger Setup
 const logger = winston.createLogger({
@@ -21,6 +28,15 @@ const logger = winston.createLogger({
   ],
 });
 
+// Initialize Socket.IO
+const io = new Server(server, {
+  cors: {
+    origin: [process.env.FRONTEND_URL, 'http://localhost:3000'], // Your frontend URL
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true
+  }
+});
+
 // Validate Environment Variables
 ['MONGODB_URI', 'SESSION_SECRET', 'FRONTEND_URL'].forEach((key) => {
   if (!process.env[key]) {
@@ -29,58 +45,53 @@ const logger = winston.createLogger({
   }
 });
 
-// MongoDB Connection
+// MongoDB connection
 mongoose.connect(process.env.MONGODB_URI, {
   retryWrites: true,
   w: 'majority',
   dbName: 'kings',
-})
-  .then(() => logger.info('Connected to MongoDB'))
-  .catch((err) => {
-    logger.error('MongoDB connection error:', err);
-    process.exit(1);
-  });
+}).then(() => {
+  logger.info('Connected to MongoDB');
+}).catch((err) => {
+  logger.error('MongoDB connection error:', err);
+  process.exit(1);
+});
 
 // CORS Setup
 app.use(cors({
   origin: [process.env.FRONTEND_URL, 'http://localhost:3000'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Trust proxy for production
+// Trust proxy for cookies over HTTPS (required for Render/Heroku/etc.)
 app.set('trust proxy', 1);
 
-// Middleware
+// Body parsers
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Session Store
 const sessionStore = MongoStore.create({
   mongoUrl: process.env.MONGODB_URI,
-  collectionName: 'sessions',
   dbName: 'kings',
-  ttl: 24 * 60 * 60, // 1 day
+  collectionName: 'sessions',
+  ttl: 24 * 60 * 60,
   autoRemove: 'native',
 });
 
-sessionStore.on('error', (err) => {
-  logger.error('MongoStore error:', { error: err.message, stack: err.stack });
-});
-
-// Session Middleware
 app.use(session({
+  name: 'kings.sid',
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   store: sessionStore,
   cookie: {
     httpOnly: true,
-    secure: false, // Force false for local testing
-    sameSite: 'lax', // Use lax for local testing
-    maxAge: 24 * 60 * 60 * 1000,
-    path: '/',
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
+    maxAge: 1000 * 60 * 60 * 24,
   },
 }));
 
@@ -92,6 +103,7 @@ app.use((req, res, next) => {
     cookies: req.headers.cookie || 'No cookies',
     url: req.url,
     origin: req.headers.origin,
+    protocol: req.protocol, // Log the protocol
   });
   res.on('finish', () => {
     logger.info('Response headers:', {
@@ -103,8 +115,31 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use((req, _res, next) => {
+  console.log('Raw headers:', req.headers);
+  console.log('Cookies:', req.get('Cookie') || 'No Cookie header');
+  next();
+});
+
+// Middleware to make io accessible in routes
+app.use((req, res, next) => {
+  req.io = io;
+  next();
+});
+
+// Socket.IO connection handler
+io.on('connection', (socket) => {
+  logger.info(`Socket connected: ${socket.id}`);
+  // You can add specific event listeners here if needed, e.g., for authentication
+  socket.on('disconnect', (reason) => {
+    logger.info(`Socket disconnected: ${socket.id}, reason: ${reason}`);
+  });
+});
+
 // Routes
 app.use('/api/users', require('./routes/userRoutes'));
+app.use('/api/categories', require('./routes/categoryRoutes')); // Add category routes
+app.use('/api/products', require('./routes/productRoutes')); // Add product routes
 
 // Test Route
 app.get('/api/test', (req, res) => {
@@ -114,7 +149,7 @@ app.get('/api/test', (req, res) => {
 });
 
 // Debug Routes
-app.get('/api/debug/session', (req, res) => {
+app.get('/api/debug/session', (req, res) => { // req is used here for req.sessionID, req.session, req.headers.cookie
   res.json({
     sessionID: req.sessionID,
     session: req.session,
@@ -122,7 +157,7 @@ app.get('/api/debug/session', (req, res) => {
   });
 });
 
-app.get('/api/debug/mongodb', async (req, res) => {
+app.get('/api/debug/mongodb', async (_req, res) => {
   try {
     if (!mongoose.connection.db) throw new Error('MongoDB connection unavailable');
     await mongoose.connection.db.admin().ping();
@@ -133,7 +168,7 @@ app.get('/api/debug/mongodb', async (req, res) => {
   }
 });
 
-app.get('/api/debug/env', (req, res) => {
+app.get('/api/debug/env', (_req, res) => {
   res.json({
     MONGODB_URI: process.env.MONGODB_URI ? 'Set' : 'Missing',
     SESSION_SECRET: process.env.SESSION_SECRET ? 'Set' : 'Missing',
@@ -143,18 +178,21 @@ app.get('/api/debug/env', (req, res) => {
   });
 });
 
-app.get('/', (req, res) => {
-  res.json({ message: 'POS Backend is Live ✅' });
+app.get('/', (_req, res) => {
+  res.send('Kings POS backend is running');
 });
 
 // Global Error Handler
-app.use((err, req, res, next) => {
+app.use((err, _req, res, _next) => {
   logger.error('Unhandled Error:', { message: err.message, stack: err.stack });
   res.status(500).json({ message: 'Server error', error: err.message });
 });
 
 // Start Server
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  logger.info(`🚀 Server running on port ${PORT}`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  // Use server.listen (from http.createServer) instead of app.listen
+  server.listen(PORT, () => {
+    logger.info(`🚀 Server running on port ${PORT}`);
+  });
+}
+module.exports = app; // <-- THIS IS CRUCIAL

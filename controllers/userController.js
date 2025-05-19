@@ -24,20 +24,13 @@ const registerUser = async (req, res) => {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    user = new User({
-      name,
-      email,
-      password: hashedPassword,
-      role: role || 'user',
-    });
+    // Create new user instance. Password hashing should be handled by a pre-save hook in the User model.
+    user = new User({ name, email, password, role: role || 'user' });
 
     await user.save();
     logger.info('User registered:', { email, role });
 
-    req.session.user = { id: user._id, email: user.email, role: user.role };
+    req.session.user = { id: user._id, name: user.name, email: user.email, role: user.role };
     logger.info('Session set:', { sessionID: req.sessionID, user: req.session.user });
 
     res.status(201).json({
@@ -56,7 +49,8 @@ const loginUser = async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    const user = await User.findOne({ email });
+    // Explicitly select the password field if it's set to select: false in the model
+    const user = await User.findOne({ email }).select('+password');
     if (!user) {
       logger.warn('Invalid credentials:', { email });
       return res.status(401).json({ message: 'Invalid credentials' });
@@ -68,7 +62,7 @@ const loginUser = async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    req.session.user = { id: user._id, email: user.email, role: user.role };
+    req.session.user = { id: user._id, name: user.name, email: user.email, role: user.role };
     logger.info('Session set:', { sessionID: req.sessionID, user: req.session.user });
 
     res.json({
@@ -85,6 +79,11 @@ const loginUser = async (req, res) => {
 
 const getUserProfile = async (req, res) => {
   try {
+    if (!req.session.user || !req.session.user.id) {
+        logger.warn('User not authenticated for profile view attempt.');
+        return res.status(401).json({ message: 'Not authenticated' });
+    }
+
     const user = await User.findById(req.session.user.id).select('-password');
     if (!user) {
       logger.warn('User not found:', { userId: req.session.user.id });
@@ -104,7 +103,7 @@ const getUserProfile = async (req, res) => {
   }
 };
 
-const getAllUsers = async (req, res) => {
+const getAllUsers = async (_req, res) => {
   try {
     const users = await User.find().select('-password');
     logger.info('All users fetched:', { count: users.length });
